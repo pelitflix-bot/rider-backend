@@ -53,6 +53,19 @@ async function inicializar() {
       costo REAL NOT NULL DEFAULT 0, precio REAL NOT NULL DEFAULT 0,
       utilidad REAL NOT NULL DEFAULT 0
     )`,
+    // Tablas de inventario (nuevas - no afectan lo existente)
+    `CREATE TABLE IF NOT EXISTS inventario (
+      id TEXT PRIMARY KEY, tipo TEXT NOT NULL, medida TEXT NOT NULL,
+      cantidad_actual INTEGER NOT NULL DEFAULT 0,
+      cantidad_minima INTEGER NOT NULL DEFAULT 5
+    )`,
+    `CREATE TABLE IF NOT EXISTS inventario_movimientos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      insumo_id TEXT NOT NULL, tipo_mov TEXT NOT NULL,
+      cantidad INTEGER NOT NULL, motivo TEXT DEFAULT '',
+      pedido_codigo TEXT DEFAULT '',
+      creado_en TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
   ], 'write');
 
   // Insertar filas iniciales por separado (Turso a veces ignora el batch si la tabla ya existe)
@@ -118,6 +131,13 @@ async function inicializar() {
   ];
   for (const [id,nombre,valor] of gastos) {
     await client.execute({ sql:`INSERT OR IGNORE INTO gastos_fijos (id,nombre,valor) VALUES (?,?,?)`, args:[id,nombre,valor] });
+  }
+
+  // Inventario inicial (solo si no existen) — arranca en 0, Steven lo carga desde la página
+  const medidas = ['10x15','15x20','20x30','30x40','40x60'];
+  for (const medida of medidas) {
+    await client.execute({ sql:`INSERT OR IGNORE INTO inventario (id,tipo,medida,cantidad_actual,cantidad_minima) VALUES (?,?,?,0,5)`, args:['lamina_'+medida,'lamina',medida] });
+    await client.execute({ sql:`INSERT OR IGNORE INTO inventario (id,tipo,medida,cantidad_actual,cantidad_minima) VALUES (?,?,?,0,5)`, args:['caja_'+medida,'caja',medida] });
   }
 
   console.log('Base de datos Turso inicializada correctamente');

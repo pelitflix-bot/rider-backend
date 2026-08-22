@@ -21,6 +21,7 @@ app.get('/api/health', async (req, res) => {
 app.use('/api/pedidos', require('./routes/pedidos.routes'));
 app.use('/api/config',  require('./routes/configuracion.routes'));
 app.use('/api/costos',  require('./routes/costos.routes'));
+app.use('/api/inventario', require('./routes/inventario.routes'));
 
 app.use((err, req, res, next) => {
   console.error(err);
