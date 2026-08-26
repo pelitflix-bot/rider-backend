@@ -66,6 +66,15 @@ async function inicializar() {
       pedido_codigo TEXT DEFAULT '',
       creado_en TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
+    // pedido_items — varios cuadros (tamaños) por pedido. No reemplaza pedidos_costos (histórico de 1 solo tamaño por pedido); se combinan en el dashboard.
+    `CREATE TABLE IF NOT EXISTS pedido_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      codigo TEXT NOT NULL, tamano TEXT NOT NULL,
+      cantidad INTEGER NOT NULL DEFAULT 1,
+      costo_unit REAL NOT NULL DEFAULT 0,
+      precio_unit REAL NOT NULL DEFAULT 0,
+      utilidad_unit REAL NOT NULL DEFAULT 0
+    )`,
   ], 'write');
 
   // Insertar filas iniciales por separado (Turso a veces ignora el batch si la tabla ya existe)

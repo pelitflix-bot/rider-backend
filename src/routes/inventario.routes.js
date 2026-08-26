@@ -65,7 +65,7 @@ router.post('/:id/ajustar', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// POST /api/inventario/descontar — descuenta 1 lámina + 1 caja de la medida al crear un pedido
+// POST /api/inventario/descontar — descuenta 1 lámina + 1 caja de la medida al crear un pedido (legado, 1 solo tamaño)
 router.post('/descontar', async (req, res) => {
   try {
     const { tamano, pedido_codigo } = req.body;
@@ -80,6 +80,38 @@ router.post('/descontar', async (req, res) => {
           sql:'INSERT INTO inventario_movimientos (insumo_id,tipo_mov,cantidad,motivo,pedido_codigo) VALUES (?,?,1,?,?)',
           args:[id, 'salida', 'Venta pedido', String(pedido_codigo||'').trim()],
         });
+      }
+      await tx.commit();
+    } catch(e) { await tx.rollback(); throw e; }
+
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/inventario/descontar-lote — descuenta varios cuadros (mismo o distinto tamaño) en un solo pedido
+router.post('/descontar-lote', async (req, res) => {
+  try {
+    const { items, pedido_codigo } = req.body;
+    if (!Array.isArray(items) || !items.length) return res.status(400).json({ error:'items requerido' });
+
+    // Agrupa por tamaño por si viene el mismo tamaño en varias filas
+    const porTamano = {};
+    items.forEach(it => {
+      if (!it.tamano) return;
+      porTamano[it.tamano] = (porTamano[it.tamano] || 0) + (Number(it.cantidad) || 1);
+    });
+
+    const tx = await client.transaction('write');
+    try {
+      for (const [tamano, cant] of Object.entries(porTamano)) {
+        for (const prefijo of ['lamina_', 'caja_']) {
+          const id = prefijo + tamano;
+          await tx.execute({ sql:'UPDATE inventario SET cantidad_actual = cantidad_actual - ? WHERE id=?', args:[cant, id] });
+          await tx.execute({
+            sql:'INSERT INTO inventario_movimientos (insumo_id,tipo_mov,cantidad,motivo,pedido_codigo) VALUES (?,?,?,?,?)',
+            args:[id, 'salida', cant, 'Venta pedido', String(pedido_codigo||'').trim()],
+          });
+        }
       }
       await tx.commit();
     } catch(e) { await tx.rollback(); throw e; }

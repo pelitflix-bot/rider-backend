@@ -104,25 +104,48 @@ router.get('/calcular/:tamano', async (req, res) => {
 // GET /api/costos/dashboard
 router.get('/dashboard', async (req, res) => {
   try {
-    const rp = await client.execute('SELECT * FROM pedidos_costos');
+    const rp = await client.execute('SELECT * FROM pedidos_costos');       // histórico: 1 tamaño por pedido
+    const ri = await client.execute('SELECT * FROM pedido_items');         // nuevo: varios cuadros por pedido
     const rg = await client.execute('SELECT * FROM gastos_fijos');
-    const gastosFijos   = rg.rows.reduce((s,g) => s + Number(g.valor||0), 0);
-    const ventas        = rp.rows.reduce((s,p) => s + Number(p.precio||0), 0);
-    const costos        = rp.rows.reduce((s,p) => s + Number(p.costo||0), 0);
-    const utilidadBruta = ventas - costos;
-    const utilidadReal  = utilidadBruta - gastosFijos;
+    const gastosFijos = rg.rows.reduce((s,g) => s + Number(g.valor||0), 0);
+
+    let ventas = 0, costos = 0, cuadrosVendidos = 0;
+    const codigos = new Set();
     const porTamano = {};
+
     rp.rows.forEach(p => {
+      ventas += Number(p.precio||0);
+      costos += Number(p.costo||0);
+      cuadrosVendidos += 1;
+      codigos.add(p.codigo);
       if (!porTamano[p.tamano]) porTamano[p.tamano] = { cantidad:0, ventas:0, utilidad:0 };
       porTamano[p.tamano].cantidad++;
       porTamano[p.tamano].ventas   += Number(p.precio||0);
       porTamano[p.tamano].utilidad += Number(p.utilidad||0);
     });
-    res.json({ totalPedidos:rp.rows.length, ventas, costos, utilidadBruta, gastosFijos, utilidadReal, porTamano });
+
+    ri.rows.forEach(it => {
+      const cant = Number(it.cantidad||1);
+      const ventaItem = Number(it.precio_unit||0) * cant;
+      const costoItem = Number(it.costo_unit||0) * cant;
+      const utilidadItem = Number(it.utilidad_unit||0) * cant;
+      ventas += ventaItem;
+      costos += costoItem;
+      cuadrosVendidos += cant;
+      codigos.add(it.codigo);
+      if (!porTamano[it.tamano]) porTamano[it.tamano] = { cantidad:0, ventas:0, utilidad:0 };
+      porTamano[it.tamano].cantidad += cant;
+      porTamano[it.tamano].ventas   += ventaItem;
+      porTamano[it.tamano].utilidad += utilidadItem;
+    });
+
+    const utilidadBruta = ventas - costos;
+    const utilidadReal  = utilidadBruta - gastosFijos;
+    res.json({ totalPedidos: codigos.size, cuadrosVendidos, ventas, costos, utilidadBruta, gastosFijos, utilidadReal, porTamano });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// POST /api/costos/pedido — guardar costo al registrar un pedido
+// POST /api/costos/pedido — guardar costo al registrar un pedido (legado, 1 solo tamaño)
 router.post('/pedido', async (req, res) => {
   try {
     const { codigo, tamano, costo, precio, utilidad } = req.body;
@@ -130,6 +153,36 @@ router.post('/pedido', async (req, res) => {
       sql:`INSERT OR REPLACE INTO pedidos_costos (codigo,tamano,costo,precio,utilidad) VALUES (?,?,?,?,?)`,
       args:[codigo, tamano, costo, precio, utilidad],
     });
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/costos/pedido-items/:codigo — cuadros registrados para un pedido
+router.get('/pedido-items/:codigo', async (req, res) => {
+  try {
+    const r = await client.execute({ sql:'SELECT * FROM pedido_items WHERE codigo=? ORDER BY id', args:[req.params.codigo] });
+    res.json(r.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/costos/pedido-items — guardar varios cuadros de un pedido (reemplaza los previos del mismo código)
+router.post('/pedido-items', async (req, res) => {
+  try {
+    const { codigo, items } = req.body;
+    if (!codigo || !Array.isArray(items) || !items.length) {
+      return res.status(400).json({ error:'codigo e items son requeridos' });
+    }
+    const tx = await client.transaction('write');
+    try {
+      await tx.execute({ sql:'DELETE FROM pedido_items WHERE codigo=?', args:[codigo] });
+      for (const it of items) {
+        await tx.execute({
+          sql:`INSERT INTO pedido_items (codigo,tamano,cantidad,costo_unit,precio_unit,utilidad_unit) VALUES (?,?,?,?,?,?)`,
+          args:[codigo, it.tamano, Number(it.cantidad)||1, Number(it.costo_unit)||0, Number(it.precio_unit)||0, Number(it.utilidad_unit)||0],
+        });
+      }
+      await tx.commit();
+    } catch(e) { await tx.rollback(); throw e; }
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
