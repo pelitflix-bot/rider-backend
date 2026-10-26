@@ -157,11 +157,24 @@ router.post('/pedido', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Cuadros de un pedido. Si es un pedido viejo (1 solo tamaño en pedidos_costos), lo devuelve como 1 cuadro.
+async function cuadrosDePedido(exec, codigo) {
+  const r = await exec.execute({ sql:'SELECT * FROM pedido_items WHERE codigo=? ORDER BY id', args:[codigo] });
+  if (r.rows.length) return { items: r.rows, legado: false };
+  const l = await exec.execute({ sql:'SELECT * FROM pedidos_costos WHERE codigo=?', args:[codigo] });
+  if (!l.rows.length) return { items: [], legado: false };
+  const p = l.rows[0];
+  return { legado: true, items: [{
+    tamano: p.tamano, cantidad: 1,
+    costo_unit: Number(p.costo||0), precio_unit: Number(p.precio||0), utilidad_unit: Number(p.utilidad||0),
+  }] };
+}
+
 // GET /api/costos/pedido-items/:codigo — cuadros registrados para un pedido
 router.get('/pedido-items/:codigo', async (req, res) => {
   try {
-    const r = await client.execute({ sql:'SELECT * FROM pedido_items WHERE codigo=? ORDER BY id', args:[req.params.codigo] });
-    res.json(r.rows);
+    const { items } = await cuadrosDePedido(client, req.params.codigo);
+    res.json(items);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -181,6 +194,55 @@ router.post('/pedido-items', async (req, res) => {
           args:[codigo, it.tamano, Number(it.cantidad)||1, Number(it.costo_unit)||0, Number(it.precio_unit)||0, Number(it.utilidad_unit)||0],
         });
       }
+      await tx.commit();
+    } catch(e) { await tx.rollback(); throw e; }
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /api/costos/pedido-items/:codigo — editar los cuadros de un pedido ya guardado.
+// Reemplaza la lista y ajusta el inventario SOLO por la diferencia (cuadros agregados descuentan, quitados devuelven).
+router.put('/pedido-items/:codigo', async (req, res) => {
+  try {
+    const codigo = req.params.codigo;
+    const { items } = req.body;
+    if (!Array.isArray(items)) return res.status(400).json({ error:'items requerido' });
+
+    const tx = await client.transaction('write');
+    try {
+      const { items: previos, legado } = await cuadrosDePedido(tx, codigo);
+
+      const contar = (lista) => {
+        const m = {};
+        lista.forEach(it => { if (it.tamano) m[it.tamano] = (m[it.tamano]||0) + (Number(it.cantidad)||1); });
+        return m;
+      };
+      const antes = contar(previos), despues = contar(items);
+
+      for (const tamano of new Set([...Object.keys(antes), ...Object.keys(despues)])) {
+        const diff = (despues[tamano]||0) - (antes[tamano]||0);
+        if (!diff) continue;
+        for (const prefijo of ['lamina_', 'caja_']) {
+          const id = prefijo + tamano;
+          await tx.execute({ sql:'UPDATE inventario SET cantidad_actual = cantidad_actual - ? WHERE id=?', args:[diff, id] });
+          await tx.execute({
+            sql:'INSERT INTO inventario_movimientos (insumo_id,tipo_mov,cantidad,motivo,pedido_codigo) VALUES (?,?,?,?,?)',
+            args:[id, diff > 0 ? 'salida' : 'entrada', Math.abs(diff), 'Edición de pedido', codigo],
+          });
+        }
+      }
+
+      await tx.execute({ sql:'DELETE FROM pedido_items WHERE codigo=?', args:[codigo] });
+      for (const it of items) {
+        if (!it.tamano) continue;
+        await tx.execute({
+          sql:`INSERT INTO pedido_items (codigo,tamano,cantidad,costo_unit,precio_unit,utilidad_unit) VALUES (?,?,?,?,?,?)`,
+          args:[codigo, it.tamano, Number(it.cantidad)||1, Number(it.costo_unit)||0, Number(it.precio_unit)||0, Number(it.utilidad_unit)||0],
+        });
+      }
+      // Pedido viejo migrado: se quita el registro legado para que el dashboard no cuente doble
+      if (legado) await tx.execute({ sql:'DELETE FROM pedidos_costos WHERE codigo=?', args:[codigo] });
+
       await tx.commit();
     } catch(e) { await tx.rollback(); throw e; }
     res.json({ ok: true });
