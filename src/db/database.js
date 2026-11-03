@@ -122,6 +122,8 @@ async function inicializar() {
     ['base_rollo_precio','Base colgar - Precio rollo 6m',36000,'COP',1],
     ['base_rollo_metros','Base colgar - Metros por rollo',6,'metros',1],
     ['base_cm_por_cuadro','Base colgar - cm por cuadro',30,'cm',1],
+    ['base_madera_10x15','Base madera 10x15',0,'COP',1],
+    ['base_madera_15x20','Base madera 15x20',0,'COP',1],
     ['sticker','Sticker + tarjeta + etiqueta',500,'COP',1],
     ['precio_10x15','Precio venta 10x15',25000,'COP',1],
     ['precio_15x20','Precio venta 15x20',40000,'COP',1],
@@ -147,6 +149,11 @@ async function inicializar() {
   for (const medida of medidas) {
     await client.execute({ sql:`INSERT OR IGNORE INTO inventario (id,tipo,medida,cantidad_actual,cantidad_minima) VALUES (?,?,?,0,5)`, args:['lamina_'+medida,'lamina',medida] });
     await client.execute({ sql:`INSERT OR IGNORE INTO inventario (id,tipo,medida,cantidad_actual,cantidad_minima) VALUES (?,?,?,0,5)`, args:['caja_'+medida,'caja',medida] });
+  }
+
+  // Bases de madera (solo 10x15 y 15x20) — arrancan en 0, se cargan desde la página
+  for (const medida of ['10x15','15x20']) {
+    await client.execute({ sql:`INSERT OR IGNORE INTO inventario (id,tipo,medida,cantidad_actual,cantidad_minima) VALUES (?,?,?,0,5)`, args:['base_madera_'+medida,'base_madera',medida] });
   }
 
   console.log('Base de datos Turso inicializada correctamente');

@@ -6,6 +6,12 @@ const express = require('express');
 const router  = express.Router();
 const { client } = require('../db/database');
 
+// Los cuadros de estas medidas llevan base de madera (no base para colgar)
+const MEDIDAS_BASE_MADERA = ['10x15', '15x20'];
+const prefijosDe = (tamano) => MEDIDAS_BASE_MADERA.includes(tamano)
+  ? ['lamina_', 'caja_', 'base_madera_']
+  : ['lamina_', 'caja_'];
+
 // GET /api/inventario — lista todo el inventario ordenado
 router.get('/', async (req, res) => {
   try {
@@ -71,7 +77,7 @@ router.post('/descontar', async (req, res) => {
     const { tamano, pedido_codigo } = req.body;
     if (!tamano) return res.status(400).json({ error:'tamano requerido' });
 
-    const ids = ['lamina_'+tamano, 'caja_'+tamano];
+    const ids = prefijosDe(tamano).map(pre => pre + tamano);
     const tx = await client.transaction('write');
     try {
       for (const id of ids) {
@@ -104,7 +110,7 @@ router.post('/descontar-lote', async (req, res) => {
     const tx = await client.transaction('write');
     try {
       for (const [tamano, cant] of Object.entries(porTamano)) {
-        for (const prefijo of ['lamina_', 'caja_']) {
+        for (const prefijo of prefijosDe(tamano)) {
           const id = prefijo + tamano;
           await tx.execute({ sql:'UPDATE inventario SET cantidad_actual = cantidad_actual - ? WHERE id=?', args:[cant, id] });
           await tx.execute({

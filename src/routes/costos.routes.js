@@ -6,6 +6,12 @@ const express = require('express');
 const router  = express.Router();
 const { client } = require('../db/database');
 
+// Los cuadros de estas medidas llevan base de madera (no base para colgar)
+const MEDIDAS_BASE_MADERA = ['10x15', '15x20'];
+const prefijosDe = (tamano) => MEDIDAS_BASE_MADERA.includes(tamano)
+  ? ['lamina_', 'caja_', 'base_madera_']
+  : ['lamina_', 'caja_'];
+
 // GET /api/costos/insumos
 router.get('/insumos', async (req, res) => {
   try {
@@ -70,9 +76,15 @@ router.get('/calcular/:tamano', async (req, res) => {
     const costoBolsaM = ins['bolsa_rollo_precio'] / (ins['bolsa_rollo_metros'] * 100);
     const costoBolsa  = cmBolsa * costoBolsaM;
 
-    const cmBase     = ins['base_cm_por_cuadro'] || 30;
-    const costoBaseM = ins['base_rollo_precio'] / (ins['base_rollo_metros'] * 100);
-    const costoBase  = cmBase * costoBaseM;
+    // 10x15 y 15x20 llevan base de madera; el resto, base para colgar
+    let costoBase;
+    if (MEDIDAS_BASE_MADERA.includes(tamano)) {
+      costoBase = ins['base_madera_' + tamano] || 0;
+    } else {
+      const cmBase     = ins['base_cm_por_cuadro'] || 30;
+      const costoBaseM = ins['base_rollo_precio'] / (ins['base_rollo_metros'] * 100);
+      costoBase = cmBase * costoBaseM;
+    }
 
     const costoSticker = ins['sticker'] || 500;
 
@@ -222,7 +234,7 @@ router.put('/pedido-items/:codigo', async (req, res) => {
       for (const tamano of new Set([...Object.keys(antes), ...Object.keys(despues)])) {
         const diff = (despues[tamano]||0) - (antes[tamano]||0);
         if (!diff) continue;
-        for (const prefijo of ['lamina_', 'caja_']) {
+        for (const prefijo of prefijosDe(tamano)) {
           const id = prefijo + tamano;
           await tx.execute({ sql:'UPDATE inventario SET cantidad_actual = cantidad_actual - ? WHERE id=?', args:[diff, id] });
           await tx.execute({
