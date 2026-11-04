@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { client } = require('../db/database');
 const { analizar } = require('../services/analizador.service');
+const { fechaColombia } = require('../utils/fecha');
 
 function fmt(n) { return 'RC-' + String(n).padStart(4,'0'); }
 function determinarTipo(cedula) { return (cedula && cedula.trim()) ? 'NACIONAL' : 'LOCAL'; }
@@ -64,7 +65,7 @@ router.post('/', async (req, res) => {
     if (errores.length) return res.status(400).json({ error:'Campos requeridos: '+errores.join(', '), campos: errores });
 
     const tipo = determinarTipo(d.cedula);
-    const fecha = new Date().toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric'});
+    const fecha = fechaColombia(); // hora de Colombia, no la del servidor (UTC)
 
     const tx = await client.transaction('write');
     let codigo;

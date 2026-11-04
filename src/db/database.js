@@ -6,6 +6,7 @@
  */
 
 const { createClient } = require('@libsql/client');
+const { fechaColombia, dateDesdeSqliteUtc } = require('../utils/fecha');
 
 const client = createClient({
   url:   process.env.TURSO_URL,
@@ -88,6 +89,39 @@ async function inicializar() {
   } catch(e) {
     // Ya existe, ignorar
   }
+  // Columna fecha ('yyyy-mm-dd') en los registros de ventas, para el dashboard por mes (migración segura)
+  for (const tabla of ['pedidos_costos', 'pedido_items']) {
+    try { await client.execute(`ALTER TABLE ${tabla} ADD COLUMN fecha TEXT`); }
+    catch(e) { /* ya existe */ }
+  }
+
+  // Corrige fechas de pedidos viejos guardadas con hora UTC (después de las 7 pm quedaban un día adelante).
+  // Se calcula desde creado_en (UTC). Si ya está bien no cambia nada, se puede repetir sin problema.
+  try {
+    const ped = await client.execute('SELECT codigo, fecha, creado_en FROM pedidos');
+    let corregidos = 0;
+    for (const p of ped.rows) {
+      const d = dateDesdeSqliteUtc(p.creado_en);
+      if (!d) continue;
+      const correcta = fechaColombia(d);
+      if (correcta !== p.fecha) {
+        await client.execute({ sql:'UPDATE pedidos SET fecha=? WHERE codigo=?', args:[correcta, p.codigo] });
+        corregidos++;
+      }
+    }
+    if (corregidos) console.log('Fechas de pedidos corregidas a hora Colombia:', corregidos);
+  } catch(e) { console.error('No se pudieron revisar las fechas de pedidos:', e.message); }
+
+  // Copia la fecha del pedido a sus registros de ventas (solo los que no la tienen).
+  // Así, si después se borra el pedido, la venta sigue en su mes.
+  for (const tabla of ['pedidos_costos', 'pedido_items']) {
+    await client.execute(`UPDATE ${tabla}
+      SET fecha = (SELECT substr(p.fecha,7,4)||'-'||substr(p.fecha,4,2)||'-'||substr(p.fecha,1,2)
+                   FROM pedidos p WHERE p.codigo = ${tabla}.codigo AND length(p.fecha)=10)
+      WHERE fecha IS NULL
+        AND EXISTS (SELECT 1 FROM pedidos p WHERE p.codigo = ${tabla}.codigo AND length(p.fecha)=10)`);
+  }
+
   // Insumos por defecto (solo si no existen)
   const insumos = [
     ['papel_rollo_precio','Papel - Precio del rollo',158000,'COP',1],

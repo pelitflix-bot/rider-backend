@@ -5,6 +5,17 @@
 const express = require('express');
 const router  = express.Router();
 const { client } = require('../db/database');
+const { isoColombia, isoDesdeFecha } = require('../utils/fecha');
+
+// Fecha ('yyyy-mm-dd') de un pedido: la del pedido si existe; si no, el respaldo; si no, hoy en Colombia
+async function fechaIsoDePedido(exec, codigo, respaldo) {
+  try {
+    const r = await exec.execute({ sql:'SELECT fecha FROM pedidos WHERE codigo=?', args:[codigo] });
+    const iso = r.rows[0] && isoDesdeFecha(r.rows[0].fecha);
+    if (iso) return iso;
+  } catch(e) { /* usa el respaldo */ }
+  return respaldo || isoColombia();
+}
 
 // Los cuadros de estas medidas llevan base de madera (no base para colgar)
 const MEDIDAS_BASE_MADERA = ['10x15', '15x20'];
@@ -114,46 +125,81 @@ router.get('/calcular/:tamano', async (req, res) => {
 });
 
 // GET /api/costos/dashboard
+// Devuelve totales acumulados y el detalle por mes (meses vacíos incluidos, desde la primera venta hasta el mes actual).
 router.get('/dashboard', async (req, res) => {
   try {
     const rp = await client.execute('SELECT * FROM pedidos_costos');       // histórico: 1 tamaño por pedido
-    const ri = await client.execute('SELECT * FROM pedido_items');         // nuevo: varios cuadros por pedido
+    const ri = await client.execute('SELECT * FROM pedido_items');         // varios cuadros por pedido
     const rg = await client.execute('SELECT * FROM gastos_fijos');
-    const gastosFijos = rg.rows.reduce((s,g) => s + Number(g.valor||0), 0);
+    const gastosMensual = rg.rows.reduce((s,g) => s + Number(g.valor||0), 0);
 
-    let ventas = 0, costos = 0, cuadrosVendidos = 0;
-    const codigos = new Set();
-    const porTamano = {};
+    const nuevoBloque = () => ({ codigos:new Set(), cuadros:0, ventas:0, costos:0, porTamano:{} });
+    const total = nuevoBloque();
+    const meses = {};          // 'yyyy-mm' -> bloque
+    const sinFecha = nuevoBloque();
 
-    rp.rows.forEach(p => {
-      ventas += Number(p.precio||0);
-      costos += Number(p.costo||0);
-      cuadrosVendidos += 1;
-      codigos.add(p.codigo);
-      if (!porTamano[p.tamano]) porTamano[p.tamano] = { cantidad:0, ventas:0, utilidad:0 };
-      porTamano[p.tamano].cantidad++;
-      porTamano[p.tamano].ventas   += Number(p.precio||0);
-      porTamano[p.tamano].utilidad += Number(p.utilidad||0);
-    });
+    const sumar = (b, codigo, tamano, cant, venta, costo, utilidad) => {
+      b.codigos.add(codigo);
+      b.cuadros += cant; b.ventas += venta; b.costos += costo;
+      if (!b.porTamano[tamano]) b.porTamano[tamano] = { cantidad:0, ventas:0, utilidad:0 };
+      b.porTamano[tamano].cantidad += cant;
+      b.porTamano[tamano].ventas   += venta;
+      b.porTamano[tamano].utilidad += utilidad;
+    };
+    const registrar = (fecha, codigo, tamano, cant, venta, costo, utilidad) => {
+      sumar(total, codigo, tamano, cant, venta, costo, utilidad);
+      const mes = /^\d{4}-\d{2}/.test(fecha || '') ? String(fecha).slice(0,7) : null;
+      if (!mes) return sumar(sinFecha, codigo, tamano, cant, venta, costo, utilidad);
+      if (!meses[mes]) meses[mes] = nuevoBloque();
+      sumar(meses[mes], codigo, tamano, cant, venta, costo, utilidad);
+    };
 
+    rp.rows.forEach(p => registrar(p.fecha, p.codigo, p.tamano, 1,
+      Number(p.precio||0), Number(p.costo||0), Number(p.utilidad||0)));
     ri.rows.forEach(it => {
-      const cant = Number(it.cantidad||1);
-      const ventaItem = Number(it.precio_unit||0) * cant;
-      const costoItem = Number(it.costo_unit||0) * cant;
-      const utilidadItem = Number(it.utilidad_unit||0) * cant;
-      ventas += ventaItem;
-      costos += costoItem;
-      cuadrosVendidos += cant;
-      codigos.add(it.codigo);
-      if (!porTamano[it.tamano]) porTamano[it.tamano] = { cantidad:0, ventas:0, utilidad:0 };
-      porTamano[it.tamano].cantidad += cant;
-      porTamano[it.tamano].ventas   += ventaItem;
-      porTamano[it.tamano].utilidad += utilidadItem;
+      const c = Number(it.cantidad||1);
+      registrar(it.fecha, it.codigo, it.tamano, c,
+        Number(it.precio_unit||0)*c, Number(it.costo_unit||0)*c, Number(it.utilidad_unit||0)*c);
     });
 
-    const utilidadBruta = ventas - costos;
-    const utilidadReal  = utilidadBruta - gastosFijos;
-    res.json({ totalPedidos: codigos.size, cuadrosVendidos, ventas, costos, utilidadBruta, gastosFijos, utilidadReal, porTamano });
+    // Rango de meses: de la primera venta con fecha hasta el mes actual (Colombia)
+    const mesActual = isoColombia().slice(0,7);
+    const claves = Object.keys(meses).sort();
+    const rango = [];
+    if (claves.length) {
+      let [y, m] = claves[0].split('-').map(Number);
+      // si hubiera ventas con fecha futura, el rango llega hasta la última
+      const ultima = claves[claves.length-1] > mesActual ? claves[claves.length-1] : mesActual;
+      const [yu, mu] = ultima.split('-').map(Number);
+      while (y < yu || (y === yu && m <= mu)) {
+        rango.push(`${y}-${String(m).padStart(2,'0')}`);
+        m++; if (m > 12) { m = 1; y++; }
+      }
+    } else {
+      rango.push(mesActual);
+    }
+
+    const aSalida = (b, gastos) => {
+      const utilidadBruta = b.ventas - b.costos;
+      return {
+        totalPedidos: b.codigos.size, cuadrosVendidos: b.cuadros,
+        ventas: b.ventas, costos: b.costos, utilidadBruta,
+        gastosFijos: gastos, utilidadReal: utilidadBruta - gastos,
+        porTamano: b.porTamano,
+      };
+    };
+
+    const porMes = rango.map(mes => ({ mes, ...aSalida(meses[mes] || nuevoBloque(), gastosMensual) }));
+    const gastosAcumulados = gastosMensual * rango.length;
+    const general = aSalida(total, gastosAcumulados);
+
+    res.json({
+      ...general,
+      gastosFijosMensual: gastosMensual,
+      mesesContados: rango.length,
+      meses: porMes,
+      sinFecha: sinFecha.codigos.size ? aSalida(sinFecha, 0) : null,
+    });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -161,9 +207,10 @@ router.get('/dashboard', async (req, res) => {
 router.post('/pedido', async (req, res) => {
   try {
     const { codigo, tamano, costo, precio, utilidad } = req.body;
+    const fecha = await fechaIsoDePedido(client, codigo);
     await client.execute({
-      sql:`INSERT OR REPLACE INTO pedidos_costos (codigo,tamano,costo,precio,utilidad) VALUES (?,?,?,?,?)`,
-      args:[codigo, tamano, costo, precio, utilidad],
+      sql:`INSERT OR REPLACE INTO pedidos_costos (codigo,tamano,costo,precio,utilidad,fecha) VALUES (?,?,?,?,?,?)`,
+      args:[codigo, tamano, costo, precio, utilidad, fecha],
     });
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -172,11 +219,11 @@ router.post('/pedido', async (req, res) => {
 // Cuadros de un pedido. Si es un pedido viejo (1 solo tamaño en pedidos_costos), lo devuelve como 1 cuadro.
 async function cuadrosDePedido(exec, codigo) {
   const r = await exec.execute({ sql:'SELECT * FROM pedido_items WHERE codigo=? ORDER BY id', args:[codigo] });
-  if (r.rows.length) return { items: r.rows, legado: false };
+  if (r.rows.length) return { items: r.rows, legado: false, fecha: r.rows[0].fecha || null };
   const l = await exec.execute({ sql:'SELECT * FROM pedidos_costos WHERE codigo=?', args:[codigo] });
   if (!l.rows.length) return { items: [], legado: false };
   const p = l.rows[0];
-  return { legado: true, items: [{
+  return { legado: true, fecha: p.fecha || null, items: [{
     tamano: p.tamano, cantidad: 1,
     costo_unit: Number(p.costo||0), precio_unit: Number(p.precio||0), utilidad_unit: Number(p.utilidad||0),
   }] };
@@ -197,13 +244,14 @@ router.post('/pedido-items', async (req, res) => {
     if (!codigo || !Array.isArray(items) || !items.length) {
       return res.status(400).json({ error:'codigo e items son requeridos' });
     }
+    const fecha = await fechaIsoDePedido(client, codigo);
     const tx = await client.transaction('write');
     try {
       await tx.execute({ sql:'DELETE FROM pedido_items WHERE codigo=?', args:[codigo] });
       for (const it of items) {
         await tx.execute({
-          sql:`INSERT INTO pedido_items (codigo,tamano,cantidad,costo_unit,precio_unit,utilidad_unit) VALUES (?,?,?,?,?,?)`,
-          args:[codigo, it.tamano, Number(it.cantidad)||1, Number(it.costo_unit)||0, Number(it.precio_unit)||0, Number(it.utilidad_unit)||0],
+          sql:`INSERT INTO pedido_items (codigo,tamano,cantidad,costo_unit,precio_unit,utilidad_unit,fecha) VALUES (?,?,?,?,?,?,?)`,
+          args:[codigo, it.tamano, Number(it.cantidad)||1, Number(it.costo_unit)||0, Number(it.precio_unit)||0, Number(it.utilidad_unit)||0, fecha],
         });
       }
       await tx.commit();
@@ -222,7 +270,8 @@ router.put('/pedido-items/:codigo', async (req, res) => {
 
     const tx = await client.transaction('write');
     try {
-      const { items: previos, legado } = await cuadrosDePedido(tx, codigo);
+      const { items: previos, legado, fecha: fechaPrevia } = await cuadrosDePedido(tx, codigo);
+      const fecha = await fechaIsoDePedido(tx, codigo, fechaPrevia);
 
       const contar = (lista) => {
         const m = {};
@@ -248,8 +297,8 @@ router.put('/pedido-items/:codigo', async (req, res) => {
       for (const it of items) {
         if (!it.tamano) continue;
         await tx.execute({
-          sql:`INSERT INTO pedido_items (codigo,tamano,cantidad,costo_unit,precio_unit,utilidad_unit) VALUES (?,?,?,?,?,?)`,
-          args:[codigo, it.tamano, Number(it.cantidad)||1, Number(it.costo_unit)||0, Number(it.precio_unit)||0, Number(it.utilidad_unit)||0],
+          sql:`INSERT INTO pedido_items (codigo,tamano,cantidad,costo_unit,precio_unit,utilidad_unit,fecha) VALUES (?,?,?,?,?,?,?)`,
+          args:[codigo, it.tamano, Number(it.cantidad)||1, Number(it.costo_unit)||0, Number(it.precio_unit)||0, Number(it.utilidad_unit)||0, fecha],
         });
       }
       // Pedido viejo migrado: se quita el registro legado para que el dashboard no cuente doble
