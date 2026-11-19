@@ -20,6 +20,33 @@ router.get('/', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// GET /api/inventario/valor — cuánto dinero hay en existencia, a costo.
+// Cantidad actual × valor vigente del insumo (mismos precios de Costos). Solo cuenta lo que hay (cantidad > 0).
+router.get('/valor', async (req, res) => {
+  try {
+    const r = await client.execute(
+      `SELECT i.id, i.tipo, i.medida, i.cantidad_actual, s.valor
+         FROM inventario i LEFT JOIN insumos s ON s.id = i.id
+        ORDER BY i.tipo, i.medida`);
+    const porTipo = {};
+    const items = [];
+    const sinPrecio = [];
+    let total = 0;
+    for (const row of r.rows) {
+      const cantidad = Math.max(Number(row.cantidad_actual) || 0, 0);
+      const costoUnit = Number(row.valor) || 0;
+      const subtotal = cantidad * costoUnit;
+      if (!porTipo[row.tipo]) porTipo[row.tipo] = { unidades: 0, valor: 0 };
+      porTipo[row.tipo].unidades += cantidad;
+      porTipo[row.tipo].valor += subtotal;
+      total += subtotal;
+      items.push({ id: row.id, tipo: row.tipo, medida: row.medida, cantidad, costo_unit: costoUnit, subtotal });
+      if (cantidad > 0 && costoUnit <= 0) sinPrecio.push({ id: row.id, tipo: row.tipo, medida: row.medida, cantidad });
+    }
+    res.json({ total, porTipo, items, sinPrecio });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // GET /api/inventario/movimientos — historial reciente (opcionalmente filtrado por insumo)
 router.get('/movimientos', async (req, res) => {
   try {
