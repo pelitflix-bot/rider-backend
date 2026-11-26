@@ -31,6 +31,22 @@ router.get('/insumos', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// PUT /api/costos/insumos — guarda varios insumos de una sola vez (un solo viaje a la base de datos).
+// Body: { insumos: [{ id, valor }, ...] }. Ignora los que traen un valor vacío o no numérico.
+router.put('/insumos', async (req, res) => {
+  try {
+    const lista = Array.isArray(req.body && req.body.insumos) ? req.body.insumos : [];
+    const validos = lista.filter(x => x && x.id && x.valor !== null && x.valor !== '' && Number.isFinite(Number(x.valor)));
+    if (validos.length) {
+      await client.batch(
+        validos.map(x => ({ sql:'UPDATE insumos SET valor=? WHERE id=?', args:[Number(x.valor), String(x.id)] })),
+        'write'
+      );
+    }
+    res.json({ ok: true, actualizados: validos.length, ignorados: lista.length - validos.length });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // PUT /api/costos/insumos/:id
 router.put('/insumos/:id', async (req, res) => {
   try {
@@ -46,6 +62,21 @@ router.get('/gastos', async (req, res) => {
   try {
     const r = await client.execute('SELECT * FROM gastos_fijos ORDER BY id');
     res.json(r.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /api/costos/gastos — guarda varios gastos fijos de una sola vez. Body: { gastos: [{ id, valor }, ...] }
+router.put('/gastos', async (req, res) => {
+  try {
+    const lista = Array.isArray(req.body && req.body.gastos) ? req.body.gastos : [];
+    const validos = lista.filter(x => x && x.id && x.valor !== null && x.valor !== '' && Number.isFinite(Number(x.valor)));
+    if (validos.length) {
+      await client.batch(
+        validos.map(x => ({ sql:'UPDATE gastos_fijos SET valor=? WHERE id=?', args:[Number(x.valor), String(x.id)] })),
+        'write'
+      );
+    }
+    res.json({ ok: true, actualizados: validos.length, ignorados: lista.length - validos.length });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
