@@ -43,7 +43,30 @@ router.get('/valor', async (req, res) => {
       items.push({ id: row.id, tipo: row.tipo, medida: row.medida, cantidad, costo_unit: costoUnit, subtotal });
       if (cantidad > 0 && costoUnit <= 0) sinPrecio.push({ id: row.id, tipo: row.tipo, medida: row.medida, cantidad });
     }
-    res.json({ total, porTipo, items, sinPrecio });
+
+    // Venta potencial: si se vende todo lo que hay en existencia, a precio de venta de lista.
+    // Cada lámina cuenta como un cuadro (precio_<medida> de Costos).
+    const pr = await client.execute(`SELECT id, valor FROM insumos WHERE id LIKE 'precio_%'`);
+    const precios = {};
+    pr.rows.forEach(x => { precios[String(x.id).replace('precio_', '')] = Number(x.valor) || 0; });
+    const porMedida = [];
+    const medidasSinPrecioVenta = [];
+    let ventaTotal = 0;
+    for (const it of items.filter(x => x.tipo === 'lamina')) {
+      const precio = precios[it.medida] || 0;
+      const subtotal = it.cantidad * precio;
+      ventaTotal += subtotal;
+      porMedida.push({ medida: it.medida, laminas: it.cantidad, precio, subtotal });
+      if (it.cantidad > 0 && precio <= 0) medidasSinPrecioVenta.push(it.medida);
+    }
+    const ventaPotencial = {
+      total: ventaTotal,
+      cuadros: porMedida.reduce((n, x) => n + x.laminas, 0),
+      porMedida,
+      sinPrecio: medidasSinPrecioVenta,
+    };
+
+    res.json({ total, porTipo, items, sinPrecio, ventaPotencial });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
